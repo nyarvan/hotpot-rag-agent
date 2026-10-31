@@ -1,0 +1,13 @@
+# Direct dependencies, pinned to the versions the results were produced with.
+# For local development against a harness checkout:
+#   pip install -e ../rag-eval-harness
+rag-eval-harness @ git+https://github.com/nyarvan/rag-eval-harness.git@b1f42674681d5d1ff270b6b6cb2030c6757726e9
+langgraph==1.2.19
+langchain-core==1.7.3
+# ragas 0.4.3 imports langchain_community.chat_models.vertexai, removed in 0.4.2
+langchain-community==0.4.1
+ragas==0.4.3
+
+# dev
+pytest==9.1.1
+pytest-cov==7.1.0
