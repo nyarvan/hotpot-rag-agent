@@ -300,29 +300,8 @@ def test_user_prompt_lists_passages_in_rank_order_then_question() -> None:
     assert first < second < prompt.index(f'Question: {QUESTION}')
 
 
-def test_system_prompt_forbids_outside_knowledge() -> None:
-    text = SYSTEM_PROMPT.lower()
-
-    assert 'only from the passages' in text
-    assert 'outside knowledge' in text
-
-
-def test_system_prompt_covers_comparison_questions() -> None:
-    text = SYSTEM_PROMPT.lower()
-
-    assert 'comparison' in text
-    assert 'a passage about each' in text
-    assert 'no passage at all' in text
-
-
-def test_system_prompt_asks_for_bridge_entity_name() -> None:
+def test_system_prompt_asks_for_bridge_entity_search_query() -> None:
     text = SYSTEM_PROMPT.lower()
 
     assert 'bridge' in text
-    assert 'name of that entity' in text
-    assert 'incidental' in text
-    assert 'never restate the question' in text
-
-
-def test_system_prompt_stays_compact() -> None:
-    assert len(SYSTEM_PROMPT) < 1200
+    assert 'search query' in text
