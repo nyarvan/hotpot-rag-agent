@@ -4,6 +4,8 @@
 rag-eval-harness @ git+https://github.com/nyarvan/rag-eval-harness.git@66aaf73fdcf5a50229e1f42927ac3e2588125429
 langgraph==1.2.19
 langchain-core==1.7.3
+openai==1.109.1
+pydantic==2.14.2
 # ragas 0.4.3 imports langchain_community.chat_models.vertexai, removed in 0.4.2
 langchain-community==0.4.1
 ragas==0.4.3
