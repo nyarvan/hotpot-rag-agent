@@ -29,15 +29,24 @@ LOG_TAIL_CHARS = 80
 ERROR_LOG_CHARS = 200
 
 SYSTEM_PROMPT = (
-    'You check whether the passages contain every fact needed to answer a '
-    'multi-hop question. Answer in JSON. '
-    'If they do, set enough=true and follow_up="". '
-    'If a fact is missing and the passages name the entity it is about '
-    '(the bridge, for example the person, film or company that a found '
-    'passage mentions), set enough=false and set follow_up to a short '
-    'search query naming that entity and the missing attribute, not a '
-    'restatement of the question. '
-    'If nothing better can be searched, set enough=true.'
+    'You check whether the passages suffice to answer a multi-hop '
+    'question. Judge only from the passages: use no outside knowledge '
+    'and assume no fact they do not state. '
+    'Comparison questions: if there is a passage about each compared '
+    'entity, set enough=true, even if some detail seems thin; only if a '
+    'compared entity has no passage at all, set enough=false and '
+    'follow_up to the name of that entity. '
+    'Bridge questions: the answer is about an entity reached through '
+    'another one (the performer of a song, the founder of a company, the '
+    'film a person starred in). If the passages identify that entity by '
+    'name but none is about it, set enough=false and follow_up to the '
+    'name of that entity plus, if useful, the attribute asked (a few '
+    'words). It must be the entity the question chain leads to, not an '
+    'incidental title, author or place mentioned in a passage. '
+    'Never restate the question as follow_up; if no such entity can be '
+    'named, set enough=true. '
+    'Reply in JSON with enough and follow_up (follow_up="" when '
+    'enough=true).'
 )
 
 
