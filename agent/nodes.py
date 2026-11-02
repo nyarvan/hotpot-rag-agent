@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from langgraph.types import interrupt
 from rag_eval.data import Document
 from rag_eval.generate import format_context
 
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 CONTEXT_K = 5
 FIRST_HOP_K = 3
+MAX_FOLLOW_UP_CHARS = 500
 
 Node = Callable[[AgentState], dict[str, Any]]
 
@@ -97,6 +99,35 @@ def merge_titles(
     return taken
 
 
+def clean_follow_up(text: str) -> str:
+    """Collapse whitespace, drop non-printable characters, cap the length."""
+    printable = ''.join(c for c in text if c.isprintable() or c.isspace())
+    return ' '.join(printable.split())[:MAX_FOLLOW_UP_CHARS]
+
+
+def _drop_repeat(query: str, earlier_queries: Sequence[str]) -> str:
+    """The query, or '' (logged) when it was already searched."""
+    if query in earlier_queries:
+        # Searching it again would return the same ranking
+        logger.info(
+            'Follow-up repeats an earlier query, answering now: %r', query,
+        )
+        return ''
+    return query
+
+
+def review_query(reply: object, earlier_queries: Sequence[str]) -> str:
+    """Clean a human reply into the next query; '' means "answer now".
+
+    Raises `TypeError` unless the reply is a string.
+    """
+    if not isinstance(reply, str):
+        raise TypeError(
+            f'review reply must be a string, got {type(reply).__name__}',
+        )
+    return _drop_repeat(clean_follow_up(reply), earlier_queries)
+
+
 def _documents_for(
         rankings: Sequence[Sequence[str]],
         documents: Mapping[str, Document],
@@ -127,16 +158,29 @@ def make_decide(
         _, context = _documents_for(state['rankings'], documents, context_k)
         decision = decider.decide(state['question'], context)
         follow_up = '' if decision.enough else decision.follow_up.strip()
-        if follow_up in state['queries']:
-            # Searching it again would return the same ranking
-            logger.info(
-                'Follow-up repeats an earlier query, answering now: %r',
-                follow_up,
-            )
-            follow_up = ''
+        follow_up = _drop_repeat(follow_up, state['queries'])
         return {'follow_up': follow_up, 'llm_calls': 1}
 
     return decide
+
+
+def make_approve(context_k: int) -> Node:
+    """Node: pause for a human to approve, edit or reject the follow-up.
+
+    The resume value is a string: the proposed follow-up approves it, other
+    text replaces it, '' rejects it. On resume the node re-runs from the
+    start, so it must stay free of side effects.
+    """
+
+    def approve(state: AgentState) -> dict[str, Any]:
+        reply = interrupt({
+            'question': state['question'],
+            'follow_up': state['follow_up'],
+            'titles': merge_titles(state['rankings'], context_k),
+        })
+        return {'follow_up': review_query(reply, state['queries'])}
+
+    return approve
 
 
 def make_generate(

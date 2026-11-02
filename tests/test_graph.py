@@ -1,14 +1,21 @@
 """Behaviour tests for the hop-limited agent graph, run on fakes."""
 import copy
 import logging
+import sqlite3
 from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
 
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.types import Command
 from rag_eval.data import Document
 from rag_eval.generate import format_context
 
 from agent.graph import build_graph
-from agent.nodes import Decision, make_retrieve
+from agent.decide import MAX_FOLLOW_UP_CHARS
+from agent.nodes import Decision, make_retrieve, review_query
 from tests.fakes import (
     DOCUMENTS,
     FakeAnswerer,
@@ -280,3 +287,205 @@ def test_decider_sees_the_current_merged_context() -> None:
         ['A1', 'A2', 'A3', 'A4', 'A5'],
         ['A1', 'A2', 'A3', 'B1', 'B2'],
     ]
+
+
+# Human review (day 3)
+
+BRIDGE_RANKING = ['B1', 'B2', 'B3']
+
+
+def _review_graph(
+        decider: FakeDecider | None = None,
+        *,
+        extra: dict[str, Sequence[str]] | None = None,
+        checkpointer: Any = None,
+) -> tuple[Any, FakeSearcher, FakeDecider, FakeAnswerer]:
+    searcher = FakeSearcher(
+        {QUESTION: RANKING, 'Bridge Entity': BRIDGE_RANKING} | (extra or {}),
+    )
+    decider = decider or FakeDecider([NEED_BRIDGE])
+    answerer = FakeAnswerer()
+    graph = build_graph(
+        searcher, decider, answerer, DOCUMENTS, human_review=True,
+        checkpointer=checkpointer or InMemorySaver(),
+    )
+    return graph, searcher, decider, answerer
+
+
+def _config(thread_id: str = 't1') -> dict[str, Any]:
+    return {'configurable': {'thread_id': thread_id}}
+
+
+def test_human_review_without_checkpointer_raises() -> None:
+    with pytest.raises(ValueError, match='checkpointer'):
+        build_graph(
+            FakeSearcher({}), FakeDecider([ENOUGH]), FakeAnswerer(), DOCUMENTS,
+            human_review=True,
+        )
+
+
+def test_interrupts_before_second_search_with_follow_up_and_titles() -> None:
+    # Arrange
+    graph, searcher, _, _ = _review_graph()
+
+    # Act
+    result = graph.invoke({'question': QUESTION}, _config())
+
+    # Assert
+    assert searcher.calls == [(QUESTION, 10)]
+    payload = result['__interrupt__'][0].value
+    assert payload == {
+        'question': QUESTION,
+        'follow_up': 'Bridge Entity',
+        'titles': ['A1', 'A2', 'A3', 'A4', 'A5'],
+    }
+    assert 'answer' not in result
+
+
+def test_resume_with_edited_query_searches_exactly_it() -> None:
+    # Arrange
+    graph, searcher, _, _ = _review_graph(
+        extra={'Edited Entity': ['B4', 'B1']},
+    )
+    graph.invoke({'question': QUESTION}, _config())
+
+    # Act
+    result = graph.invoke(Command(resume='Edited Entity'), _config())
+
+    # Assert
+    assert searcher.calls[1] == ('Edited Entity', 10)
+    assert len(searcher.calls) == 2
+    assert result['queries'][-1] == 'Edited Entity'
+    assert result['answer'] == 'fake answer'
+
+
+def test_resume_with_proposed_follow_up_searches_it() -> None:
+    # Arrange
+    graph, searcher, _, _ = _review_graph()
+    graph.invoke({'question': QUESTION}, _config())
+
+    # Act
+    result = graph.invoke(Command(resume='Bridge Entity'), _config())
+
+    # Assert
+    assert searcher.calls[1] == ('Bridge Entity', 10)
+    assert result['hops'] == 2
+
+
+def test_resume_with_empty_string_answers_from_first_hop() -> None:
+    # Arrange
+    graph, searcher, _, answerer = _review_graph()
+    graph.invoke({'question': QUESTION}, _config())
+
+    # Act
+    result = graph.invoke(Command(resume=''), _config())
+
+    # Assert
+    assert searcher.calls == [(QUESTION, 10)]
+    assert result['hops'] == 1
+    assert _titles(answerer.received[0]) == RANKING[:5]
+
+
+def test_resume_does_not_call_decider_again() -> None:
+    # Arrange
+    graph, _, decider, _ = _review_graph()
+    graph.invoke({'question': QUESTION}, _config())
+
+    # Act
+    graph.invoke(Command(resume='Bridge Entity'), _config())
+
+    # Assert
+    assert len(decider.seen_contexts) == 1
+
+
+def test_no_interrupt_when_decider_says_enough() -> None:
+    # Arrange
+    graph, searcher, _, _ = _review_graph(FakeDecider([ENOUGH]))
+
+    # Act
+    result = graph.invoke({'question': QUESTION}, _config())
+
+    # Assert
+    assert '__interrupt__' not in result
+    assert result['answer'] == 'fake answer'
+    assert len(searcher.calls) == 1
+
+
+def test_edited_query_repeating_earlier_query_is_rejected() -> None:
+    # Arrange
+    graph, searcher, _, _ = _review_graph()
+    graph.invoke({'question': QUESTION}, _config())
+
+    # Act
+    result = graph.invoke(Command(resume=QUESTION), _config())
+
+    # Assert
+    assert searcher.calls == [(QUESTION, 10)]
+    assert result['hops'] == 1
+    assert result['answer'] == 'fake answer'
+
+
+def test_non_string_resume_raises_type_error() -> None:
+    # Arrange
+    graph, _, _, _ = _review_graph()
+    graph.invoke({'question': QUESTION}, _config())
+
+    # Act / Assert
+    with pytest.raises(TypeError):
+        graph.invoke(Command(resume=5), _config())
+
+
+@pytest.mark.parametrize(('reply', 'expected'), [
+    ('  Edited \n Entity\t', 'Edited Entity'),
+    ('Edited\x00Entity', 'EditedEntity'),
+    ('x' * (MAX_FOLLOW_UP_CHARS + 50), 'x' * MAX_FOLLOW_UP_CHARS),
+    ('   ', ''),
+    ('', ''),
+])
+def test_review_query_cleans_reply(reply: str, expected: str) -> None:
+    assert review_query(reply, [QUESTION]) == expected
+
+
+@pytest.mark.parametrize('reply', [None, 5, ['a'], b'a'])
+def test_review_query_rejects_non_string(reply: object) -> None:
+    with pytest.raises(TypeError):
+        review_query(reply, [])  # type: ignore[arg-type]
+
+
+def test_review_query_logs_repeated_query(
+        caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Act
+    with caplog.at_level(logging.INFO, logger='agent.nodes'):
+        result = review_query(f' {QUESTION} ', [QUESTION])
+
+    # Assert
+    assert result == ''
+    assert 'repeats an earlier query' in caplog.text
+
+
+def test_resume_after_reopening_sqlite_checkpoint(tmp_path: Path) -> None:
+    # Arrange
+    db_path = tmp_path / 'checkpoints.sqlite'
+    first_conn = sqlite3.connect(db_path, check_same_thread=False)
+    graph, _, _, _ = _review_graph(checkpointer=SqliteSaver(first_conn))
+    graph.invoke({'question': QUESTION}, _config('durable'))
+    first_conn.close()
+
+    # Act
+    second_conn = sqlite3.connect(db_path, check_same_thread=False)
+    try:
+        graph2, searcher2, _, _ = _review_graph(
+            checkpointer=SqliteSaver(second_conn),
+            extra={'Edited Entity': ['B4']},
+        )
+        result = graph2.invoke(
+            Command(resume='Edited Entity'), _config('durable'),
+        )
+    finally:
+        second_conn.close()
+
+    # Assert
+    assert searcher2.calls == [('Edited Entity', 10)]
+    assert result['queries'] == [QUESTION, 'Edited Entity']
+    assert result['answer'] == 'fake answer'

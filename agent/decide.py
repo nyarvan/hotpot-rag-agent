@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, StrictBool, ValidationError
 from rag_eval.data import Document
 from rag_eval.generate import ChatModel, cache_key, format_context
 
-from .nodes import Decision
+from .nodes import MAX_FOLLOW_UP_CHARS, Decision, clean_follow_up
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,6 @@ DECIDE_SCHEMA = {
     'required': ['enough', 'follow_up'],
     'additionalProperties': False,
 }
-MAX_FOLLOW_UP_CHARS = 500
 DEFAULT_CACHE_DIR = 'data/decide_cache'
 LOG_TAIL_CHARS = 80
 ERROR_LOG_CHARS = 200
@@ -56,17 +55,11 @@ def build_decide_prompt(question: str, contexts: Sequence[Document]) -> str:
     return f'Passages:\n{passages}\n\nQuestion: {question}'
 
 
-def _clean_follow_up(text: str) -> str:
-    """Collapse whitespace, drop non-printable characters, cap the length."""
-    printable = ''.join(c for c in text if c.isprintable() or c.isspace())
-    return ' '.join(printable.split())[:MAX_FOLLOW_UP_CHARS]
-
-
 def _to_decision(reply: DecideReply) -> Decision:
     """Decision with a normalised follow-up (empty when enough)."""
     if reply.enough:
         return Decision(enough=True)
-    return Decision(enough=False, follow_up=_clean_follow_up(reply.follow_up))
+    return Decision(enough=False, follow_up=clean_follow_up(reply.follow_up))
 
 
 def _read(path: Path) -> str | None:
