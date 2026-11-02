@@ -173,6 +173,7 @@ def test_repeated_query_is_treated_as_enough_and_logged(
     # Assert
     assert len(searcher.calls) == 1
     assert result['hops'] == 1
+    assert result['llm_calls'] == 2  # a rejected repeat still cost a decide
     assert 'repeats an earlier query' in caplog.text
 
 

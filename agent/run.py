@@ -3,6 +3,7 @@
 `AgentRecord` extends the harness `RunRecord`, so `rag-eval eval` reads the
 run files and ignores the extra fields.
 """
+import logging
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
@@ -12,6 +13,9 @@ from rag_eval.data import Question
 from rag_eval.records import RunRecord
 
 from .graph import SEARCH_K
+
+PROGRESS_EVERY = 20
+logger = logging.getLogger(__name__)
 
 
 class AgentRecord(RunRecord):
@@ -74,7 +78,10 @@ def run_agent(
                 f'Question not in prefetch set: {question.question!r}'
             )
     searcher.prefetch(to_prefetch, search_k)
-    return [
-        to_record(question, graph.invoke({'question': question.question}))
-        for question in questions
-    ]
+    records = []
+    for done, question in enumerate(questions, start=1):
+        state = graph.invoke({'question': question.question})
+        records.append(to_record(question, state))
+        if done % PROGRESS_EVERY == 0:
+            logger.info('%d/%d questions', done, len(questions))
+    return records

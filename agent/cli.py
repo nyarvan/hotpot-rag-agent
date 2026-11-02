@@ -1,9 +1,12 @@
-"""Command line entry point: `python -m agent.cli ask "question"`.
+"""Command line entry point: `python -m agent.cli ask|run`.
 
-`ask` runs the graph with human review: before the second search it shows
-the proposed follow-up and lets the user approve, edit or reject it.
+`ask "question"` runs the graph with human review: before the second search
+it shows the proposed follow-up and lets the user approve, edit or reject it.
+`run --out FILE` runs the graph without review over the first n questions
+and writes a harness-compatible run file, after a cost confirmation.
 """
 import argparse
+import logging
 import os
 import sqlite3
 import sys
@@ -16,8 +19,10 @@ import openai
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
+from rag_eval.cost import confirm
 from rag_eval.data import DEFAULT_N
 
+from .batch import run_batch
 from .components import DEFAULT_DATA_DIR, Components, build_components
 from .graph import MAX_HOPS, SEARCH_K, build_graph
 
@@ -33,6 +38,9 @@ MAX_QUESTION_CHARS = 1000
 EXIT_ERROR = 1
 EXIT_ABORTED = 130
 REPLACEMENT_CHAR = '\ufffd'
+LOG_FORMAT = '%(asctime)s %(message)s'
+PROGRESS_HANDLER = logging.StreamHandler()
+PROGRESS_HANDLER.setFormatter(logging.Formatter(LOG_FORMAT))
 
 
 def _positive_int(text: str) -> int:
@@ -77,6 +85,16 @@ def _parser() -> argparse.ArgumentParser:
     ask.add_argument('question', type=_question)
     ask.add_argument('--max-hops', type=_positive_int, default=MAX_HOPS)
     ask.add_argument('--data-dir', type=Path, default=DEFAULT_DATA_DIR)
+    batch = commands.add_parser(
+        'run', help='run the agent over the first n questions',
+    )
+    batch.add_argument('--out', type=Path, required=True)
+    batch.add_argument('--max-hops', type=_positive_int, default=MAX_HOPS)
+    batch.add_argument('--n', type=_positive_int, default=DEFAULT_N)
+    batch.add_argument('--data-dir', type=Path, default=DEFAULT_DATA_DIR)
+    batch.add_argument(
+        '--yes', action='store_true', help='do not ask before paid calls',
+    )
     return parser
 
 
@@ -174,10 +192,35 @@ def _run(
         saver.delete_thread(thread_id)
 
 
+def _enable_progress_log() -> None:
+    """Show agent progress on stderr; third-party loggers stay untouched."""
+    logger = logging.getLogger(__package__)
+    logger.setLevel(logging.INFO)
+    if PROGRESS_HANDLER not in logger.handlers:
+        logger.addHandler(PROGRESS_HANDLER)
+
+
+def _ask_command(
+        args: argparse.Namespace, components: Components,
+        input_fn: Callable[[str], str], out: TextIO, checkpoint_path: Path,
+) -> None:
+    """Run `ask` with a checkpoint database for the review pause."""
+    connection = _connect(checkpoint_path)
+    try:
+        saver = SqliteSaver(
+            connection,
+            serde=JsonPlusSerializer(allowed_msgpack_modules=None),
+        )
+        _run(args, components, saver, input_fn, out)
+    finally:
+        connection.close()
+
+
 def main(
         argv: Sequence[str] | None = None, *,
         components_factory: Callable[[Path], Components] = build_components,
         input_fn: Callable[[str], str] = input,
+        confirm_fn: Callable[..., bool] = confirm,
         out: TextIO = sys.stdout,
         err: TextIO = sys.stderr,
         checkpoint_path: Path = DEFAULT_CHECKPOINT_PATH,
@@ -190,19 +233,16 @@ def main(
         print(f'error: {error}', file=err)
         return EXIT_ERROR
     try:
-        connection = _connect(checkpoint_path)
-        try:
-            saver = SqliteSaver(
-                connection,
-                serde=JsonPlusSerializer(allowed_msgpack_modules=None),
-            )
-            _run(args, components, saver, input_fn, out)
-        finally:
-            connection.close()
+        if args.command == 'run':
+            _enable_progress_log()
+            return run_batch(args, components, confirm_fn=confirm_fn, out=out)
+        _ask_command(args, components, input_fn, out, checkpoint_path)
     except (EOFError, KeyboardInterrupt):
         print('aborted', file=err)
         return EXIT_ABORTED
-    except (ValueError, OSError, openai.OpenAIError) as error:
+    except (
+            ValueError, OSError, RuntimeError, openai.OpenAIError,
+    ) as error:
         print(f'error: {type(error).__name__}: {error}', file=err)
         return EXIT_ERROR
     return 0
