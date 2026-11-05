@@ -1,0 +1,28 @@
+{
+  "timestamp": "2026-11-05T18:52:06",
+  "sample_ids": [
+    "5ac35a7e554299741d48a257",
+    "5ade25ed5542997c77aded70",
+    "5ae22eae554299495565da30",
+    "5adf3e835542993a75d26442",
+    "5a8ee3a755429917b4a5be02",
+    "5ac19f405542991316484b5b",
+    "5ae382ee5542992e3233c430",
+    "5adcdf455542994ed6169c11",
+    "5ab2659e554299340b5254b2",
+    "5adcbb815542994ed6169bde"
+  ],
+  "warmup_ids": [
+    "5a713b325542994082a3e6b5",
+    "5a78ae8b5542990784727730"
+  ],
+  "torch_device": "mps:0",
+  "dense_model": "bge_m3",
+  "reranker": "BAAI/bge-reranker-v2-m3",
+  "chat_model": "gpt-4o-mini",
+  "w_hop2_share_heldout": 0.38857142857142857,
+  "fallbacks": {
+    "baseline": 0,
+    "agent": 0
+  }
+}
